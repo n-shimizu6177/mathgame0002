@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>2年生一斉！数学対戦アプリ</title>
+  <title>数学小問攻略</title>
 
   <!-- MathJax -->
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script" async></script>
@@ -112,7 +112,7 @@
 
   <!-- 1. エントリー画面 -->
   <div id="entryScreen" class="screen active">
-    <h1>2年生一斉！数学対戦0.5</h1>
+    <h1>2年生一斉！小問完全攻略バトル</h1>
     
     <div class="input-group">
       <label for="playerName">名前</label>
@@ -246,8 +246,8 @@
 </div>
 
 <script>
-  const HOST_PASSWORD = "teacher2026";
-  const QUESTION_TIME_LIMIT = 15;
+  const HOST_PASSWORD = "mteacher";
+  const QUESTION_TIME_LIMIT = 30;
 
   let peer = null;
   let hostConn = null;
@@ -565,7 +565,7 @@
       // 正解処理
       correctAnswersCount++;
       baseScoreTotal += 100;
-      timeBonus = Math.round(timeLeft * 10);
+      timeBonus = Math.round(timeLeft / 30 * 100);
       timeBonusTotal += timeBonus;
       myScore += (100 + timeBonus);
 
