@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>2年生一斉！数学対戦アプリ (PeerJS版)</title>
+  <title>2年生一斉！数学対戦アプリ (スピード対戦版)</title>
 
   <!-- MathJax -->
   <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" id="MathJax-script" async></script>
 
-  <!-- PeerJS SDK (Firebase不要の通信ライブラリ) -->
+  <!-- PeerJS SDK -->
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
   <style>
@@ -72,6 +72,14 @@
       padding: 14px; font-size: 17px; margin-bottom: 16px; min-height: 60px;
     }
 
+    /* タイマーバー表示 */
+    .timer-container {
+      width: 100%; background-color: #e0e0e0; border-radius: 8px; height: 16px; margin-bottom: 12px; overflow: hidden;
+    }
+    .timer-bar {
+      height: 100%; background-color: #ff9800; width: 100%; transition: width 0.1s linear, background-color 0.3s;
+    }
+
     .ranking-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     .ranking-table th, .ranking-table td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 14px; }
     .ranking-table th { background-color: var(--primary-color); color: white; }
@@ -111,7 +119,7 @@
     <button class="btn" onclick="joinLobby()">対戦ロビーに参加する</button>
     <button class="btn btn-solo" onclick="startSoloMode()">一人で練習する (ソロ)</button>
     <hr style="margin: 16px 0;">
-    <button class="btn btn-host" onclick="showScreen('hostAuthScreen')">教員用管理画面へ</button>
+    <button class="btn btn-host" onclick="navigateTo('hostAuthScreen')">教員用管理画面へ</button>
   </div>
 
   <!-- 2. 教員ログイン画面 -->
@@ -123,7 +131,7 @@
       <p id="authErrorMessage" class="error-msg">パスワードが間違っています</p>
     </div>
     <button class="btn" onclick="verifyHostPassword()">ログイン</button>
-    <button class="btn btn-secondary" onclick="showScreen('entryScreen')">戻る</button>
+    <button class="btn btn-secondary" onclick="history.back()">戻る</button>
   </div>
 
   <!-- 3. 生徒ロビー画面 -->
@@ -138,7 +146,14 @@
   <div id="quizScreen" class="screen">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom:8px;">
       <span id="questionProgress" style="font-weight:bold;">第 1 / 3 問</span>
+      <span id="timerText" style="font-weight:bold; color:#ff9800;">残り時間: 15.0秒</span>
     </div>
+    
+    <!-- タイムバー -->
+    <div class="timer-container">
+      <div id="timerBar" class="timer-bar"></div>
+    </div>
+
     <div class="question-box" id="questionText">問題文</div>
     <div class="options-grid" id="optionsContainer"></div>
   </div>
@@ -193,9 +208,11 @@
 
 <script>
   const HOST_PASSWORD = "teacher2026";
+  const QUESTION_TIME_LIMIT = 15; // 1問あたりの制限時間（秒）
+
   let peer = null;
-  let hostConn = null; // 生徒用
-  let studentConns = []; // 教員用（接続中の生徒リスト）
+  let hostConn = null;
+  let studentConns = [];
   let isHost = false;
   let isSoloMode = false;
 
@@ -205,7 +222,11 @@
   let currentQuestionIndex = 0;
   let myScore = 0;
 
-  // 教員側で保持する生徒スコア管理リスト
+  // タイマー関連データ
+  let questionStartTime = 0;
+  let timerInterval = null;
+  let timeLeft = QUESTION_TIME_LIMIT;
+
   let leaderboard = [];
 
   let questions = [
@@ -226,16 +247,37 @@
     }
   ];
 
+  // --- 画面遷移 & ブラウザバック（History API）対応 ---
+  function showScreen(screenId) {
+    clearInterval(timerInterval); // 画面遷移時にタイマーを停止
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(screenId).classList.add('active');
+    updateMathJax();
+  }
+
+  function navigateTo(screenId) {
+    history.pushState({ screenId: screenId }, '', '#' + screenId);
+    showScreen(screenId);
+  }
+
+  // ブラウザの「戻る」「進む」ボタンイベントの検知
+  window.onpopstate = function(event) {
+    if (event.state && event.state.screenId) {
+      showScreen(event.state.screenId);
+    } else {
+      showScreen('entryScreen');
+    }
+  };
+
+  // 初期ロード時の履歴設定
+  window.addEventListener('DOMContentLoaded', () => {
+    history.replaceState({ screenId: 'entryScreen' }, '', '#entryScreen');
+  });
+
   function updateMathJax() {
     if (window.MathJax && window.MathJax.typesetPromise) {
       window.MathJax.typesetPromise().catch(err => console.log(err));
     }
-  }
-
-  function showScreen(screenId) {
-    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(screenId).classList.add('active');
-    updateMathJax();
   }
 
   // --- 教員 (ホスト) 処理 ---
@@ -247,34 +289,27 @@
       document.getElementById('authErrorMessage').style.display = 'none';
       isHost = true;
       initHostPeer();
-      showScreen('hostScreen');
+      navigateTo('hostScreen');
     } else {
       document.getElementById('authErrorMessage').style.display = 'block';
     }
   }
 
   function initHostPeer() {
-    // ルームIDをPeerIDとして割り当て
     peer = new Peer("host-" + myRoomId);
-
-    peer.on('open', (id) => {
-      console.log("ホスト起動: " + id);
-    });
 
     peer.on('connection', (conn) => {
       studentConns.push(conn);
 
       conn.on('data', (data) => {
         if (data.type === 'join') {
-          // 生徒の参加情報を記録
           leaderboard.push({ id: conn.peer, name: data.name, class: data.class, score: 0 });
           updateHostUI();
         } else if (data.type === 'score_update') {
-          // 生徒のスコア更新
           let user = leaderboard.find(u => u.id === conn.peer);
           if (user) user.score = data.score;
           updateHostUI();
-          broadcastRanking(); // 全員に最新のランキングを共有
+          broadcastRanking();
         }
       });
 
@@ -284,12 +319,6 @@
         updateHostUI();
       });
     });
-
-    peer.on('error', (err) => {
-      if (err.type === 'unavailable-id') {
-        alert("すでに同じルームIDでホストが起動されています。");
-      }
-    });
   }
 
   function updateHostUI() {
@@ -298,14 +327,12 @@
   }
 
   function startHostGame() {
-    // 全生徒に「ゲーム開始指令」と「問題データ」を送信
     studentConns.forEach(conn => {
       conn.send({ type: 'start_game', questions: questions });
     });
   }
 
   function broadcastRanking() {
-    // スコア順にソートして送信
     let sorted = [...leaderboard].sort((a, b) => b.score - a.score);
     studentConns.forEach(conn => {
       conn.send({ type: 'ranking_update', ranking: sorted });
@@ -323,17 +350,15 @@
       return;
     }
 
-    showScreen('lobbyScreen');
+    navigateTo('lobbyScreen');
     peer = new Peer();
 
     peer.on('open', () => {
-      // 教員（ホスト）に接続
       hostConn = peer.connect("host-" + myRoomId);
 
       hostConn.on('open', () => {
         document.getElementById('studentStatus').innerText = "接続成功！教員の開始を待っています";
         document.getElementById('studentStatus').style.color = "green";
-        // 参加者情報をホストに送信
         hostConn.send({ type: 'join', name: myName, class: myClass });
       });
 
@@ -345,14 +370,10 @@
           renderRankingTable('rankingBody', data.ranking);
         }
       });
-
-      hostConn.on('error', () => {
-        alert("教員のルームが見つかりません。ルームIDを確認してください。");
-      });
     });
   }
 
-  // --- クイズ共通 処理 ---
+  // --- クイズ & タイムボーナス処理 ---
   function startSoloMode() {
     isSoloMode = true;
     myName = document.getElementById('playerName').value.trim() || "ゲスト";
@@ -363,11 +384,13 @@
   function startQuizGame() {
     currentQuestionIndex = 0;
     myScore = 0;
-    showScreen('quizScreen');
+    navigateTo('quizScreen');
     renderQuestion();
   }
 
   function renderQuestion() {
+    clearInterval(timerInterval);
+
     const qData = questions[currentQuestionIndex];
     document.getElementById('questionProgress').innerText = `第 ${currentQuestionIndex + 1} / ${questions.length} 問`;
     document.getElementById('questionText').innerHTML = qData.q;
@@ -384,12 +407,46 @@
     });
 
     updateMathJax();
+
+    // タイマー開始
+    timeLeft = QUESTION_TIME_LIMIT;
+    questionStartTime = Date.now();
+    updateTimerUI();
+
+    timerInterval = setInterval(() => {
+      const elapsed = (Date.now() - questionStartTime) / 1000;
+      timeLeft = Math.max(0, QUESTION_TIME_LIMIT - elapsed);
+      updateTimerUI();
+
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        selectAnswer(-1); // 時間切れ（不正解扱い）
+      }
+    }, 100);
+  }
+
+  function updateTimerUI() {
+    document.getElementById('timerText').innerText = `残り時間: ${timeLeft.toFixed(1)}秒`;
+    const percentage = (timeLeft / QUESTION_TIME_LIMIT) * 100;
+    const bar = document.getElementById('timerBar');
+    bar.style.width = percentage + "%";
+
+    if (percentage < 30) {
+      bar.style.backgroundColor = "#f44336"; // 赤色
+    } else {
+      bar.style.backgroundColor = "#ff9800"; // オレンジ
+    }
   }
 
   function selectAnswer(selectedIndex) {
+    clearInterval(timerInterval);
+
     const qData = questions[currentQuestionIndex];
+    
+    // 正解の場合：基本点100点 + 残り時間ボーナス（1秒につき10点）
     if (selectedIndex === qData.answer) {
-      myScore += 10;
+      const timeBonus = Math.round(timeLeft * 10);
+      myScore += (100 + timeBonus);
     }
 
     // 教員へスコアをリアルタイム送信
@@ -406,7 +463,7 @@
   }
 
   function finishGame() {
-    showScreen('resultScreen');
+    navigateTo('resultScreen');
     document.getElementById('personalResult').innerText = `あなたのスコア: ${myScore} 点`;
     if (isSoloMode) {
       renderRankingTable('rankingBody', [{ name: myName, class: myClass, score: myScore }]);
@@ -418,7 +475,7 @@
     tbody.innerHTML = '';
     let sorted = [...dataList].sort((a, b) => b.score - a.score);
     sorted.forEach((item, index) => {
-      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.class}</td><td>${item.score}</td></tr>`;
+      tbody.innerHTML += `<tr><td>${index + 1}</td><td>${item.name}</td><td>${item.class}</td><td>${item.score}点</td></tr>`;
     });
   }
 
@@ -426,9 +483,9 @@
   function toggleEditor(show) {
     if (show) {
       renderEditorFields();
-      showScreen('editorScreen');
+      navigateTo('editorScreen');
     } else {
-      showScreen('hostScreen');
+      navigateTo('hostScreen');
     }
   }
 
@@ -491,7 +548,7 @@
     }
     questions = newQuestions;
     alert("問題セットを保存しました。");
-    showScreen('hostScreen');
+    navigateTo('hostScreen');
   }
 
   function exportQuestionsJSON() {
