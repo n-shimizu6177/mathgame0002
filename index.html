@@ -41,7 +41,6 @@
 
     h1, h2, h3 { text-align: center; color: var(--primary-color); margin-top: 0; }
     
-    /* 画面表示制御 */
     .screen { display: none !important; }
     .screen.active { display: block !important; }
 
@@ -66,8 +65,11 @@
     .option-btn {
       padding: 14px; font-size: 16px; font-weight: bold; background-color: #f0f0f0;
       border: 2px solid #ccc; border-radius: 8px; cursor: pointer; text-align: center;
+      transition: background-color 0.2s, border-color 0.2s;
     }
     .option-btn:hover { background-color: #e0e0e0; }
+    .option-btn.correct { background-color: #4caf50 !important; color: white !important; border-color: #388e3c !important; }
+    .option-btn.wrong { background-color: #f44336 !important; color: white !important; border-color: #d32f2f !important; }
 
     .question-box {
       background-color: #f0f4f8; border-left: 5px solid var(--primary-color);
@@ -80,6 +82,20 @@
     .timer-bar {
       height: 100%; background-color: #ff9800; width: 100%; transition: width 0.1s linear, background-color 0.3s;
     }
+
+    .feedback-banner {
+      padding: 10px; text-align: center; font-weight: bold; font-size: 16px; border-radius: 6px; margin-bottom: 12px; display: none;
+    }
+    .feedback-banner.correct { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; display: block; }
+    .feedback-banner.wrong { background-color: #ffebee; color: #c62828; border: 1px solid #ef9a9a; display: block; }
+
+    .score-breakdown {
+      background: #f5f5f5; border-radius: 8px; padding: 14px; margin: 16px 0; border: 1px solid #e0e0e0;
+    }
+    .score-breakdown-row {
+      display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #ccc; font-size: 15px;
+    }
+    .score-breakdown-row:last-child { border-bottom: none; font-weight: bold; font-size: 18px; color: var(--primary-color); }
 
     .ranking-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
     .ranking-table th, .ranking-table td { border: 1px solid #ddd; padding: 8px; text-align: center; font-size: 14px; }
@@ -154,6 +170,9 @@
       <div id="timerBar" class="timer-bar"></div>
     </div>
 
+    <!-- 正誤フィードバックバナー -->
+    <div id="feedbackBanner" class="feedback-banner"></div>
+
     <div class="question-box" id="questionText">問題文</div>
     <div class="options-grid" id="optionsContainer"></div>
   </div>
@@ -161,7 +180,27 @@
   <!-- 5. 結果画面 -->
   <div id="resultScreen" class="screen">
     <h2>対戦結果</h2>
-    <p style="text-align: center; font-size: 18px; font-weight:bold;" id="personalResult">あなたのスコア: 0 点</p>
+    
+    <!-- 得点内訳表示カード -->
+    <div class="score-breakdown">
+      <div class="score-breakdown-row">
+        <span>正解数</span>
+        <span id="breakdownCorrectCount">0 / 0 問</span>
+      </div>
+      <div class="score-breakdown-row">
+        <span>正解基礎点 (+100pt/問)</span>
+        <span id="breakdownBaseScore">0 pt</span>
+      </div>
+      <div class="score-breakdown-row">
+        <span>タイムボーナス</span>
+        <span id="breakdownTimeBonus">0 pt</span>
+      </div>
+      <div class="score-breakdown-row">
+        <span>合計スコア</span>
+        <span id="breakdownTotalScore">0 pt</span>
+      </div>
+    </div>
+
     <h3>結果順位</h3>
     <table class="ranking-table">
       <thead><tr><th>順位</th><th>名前</th><th>クラス</th><th>スコア</th></tr></thead>
@@ -220,7 +259,13 @@
   let myClass = "";
   let myRoomId = "";
   let currentQuestionIndex = 0;
+  
+  // スコア内訳用変数
+  let correctAnswersCount = 0;
+  let baseScoreTotal = 0;
+  let timeBonusTotal = 0;
   let myScore = 0;
+  let isAnsweringLocked = false; // 連打ガード
 
   let questionStartTime = 0;
   let timerInterval = null;
@@ -300,7 +345,6 @@
     return shuffledQ;
   }
 
-  // 画面切り替え制御
   function navigateTo(screenId) {
     if (timerInterval) clearInterval(timerInterval);
     
@@ -323,7 +367,6 @@
     window.location.href = window.location.pathname;
   }
 
-  // 初期化処理
   window.addEventListener('DOMContentLoaded', () => {
     navigateTo('entryScreen');
   });
@@ -431,7 +474,7 @@
     });
   }
 
-  // --- クイズ & タイムボーナス処理 ---
+  // --- クイズ & 正誤判定・内訳処理 ---
   function startSoloMode() {
     isSoloMode = true;
     myName = document.getElementById('playerName').value.trim() || "ゲスト";
@@ -442,13 +485,23 @@
 
   function startQuizGame() {
     currentQuestionIndex = 0;
+    correctAnswersCount = 0;
+    baseScoreTotal = 0;
+    timeBonusTotal = 0;
     myScore = 0;
+    
     navigateTo('quizScreen');
     renderQuestion();
   }
 
   function renderQuestion() {
     if (timerInterval) clearInterval(timerInterval);
+    isAnsweringLocked = false;
+
+    // バナーの非表示
+    const banner = document.getElementById('feedbackBanner');
+    banner.className = 'feedback-banner';
+    banner.innerText = '';
 
     const qData = questions[currentQuestionIndex];
     document.getElementById('questionProgress').innerText = `第 ${currentQuestionIndex + 1} / ${questions.length} 問`;
@@ -460,6 +513,7 @@
     qData.options.forEach((optText, index) => {
       const btn = document.createElement('button');
       btn.className = 'option-btn';
+      btn.id = `opt-btn-${index}`;
       btn.innerHTML = optText;
       btn.onclick = () => selectAnswer(index);
       container.appendChild(btn);
@@ -478,7 +532,7 @@
 
       if (timeLeft <= 0) {
         clearInterval(timerInterval);
-        selectAnswer(-1);
+        selectAnswer(-1); // 時間切れ
       }
     }, 100);
   }
@@ -497,30 +551,68 @@
   }
 
   function selectAnswer(selectedIndex) {
+    if (isAnsweringLocked) return;
+    isAnsweringLocked = true;
     if (timerInterval) clearInterval(timerInterval);
 
     const qData = questions[currentQuestionIndex];
-    
+    const banner = document.getElementById('feedbackBanner');
+    const correctBtn = document.getElementById(`opt-btn-${qData.answer}`);
+
+    let timeBonus = 0;
+
     if (selectedIndex === qData.answer) {
-      const timeBonus = Math.round(timeLeft * 10);
+      // 正解処理
+      correctAnswersCount++;
+      baseScoreTotal += 100;
+      timeBonus = Math.round(timeLeft * 10);
+      timeBonusTotal += timeBonus;
       myScore += (100 + timeBonus);
+
+      if (correctBtn) correctBtn.classList.add('correct');
+      banner.className = 'feedback-banner correct';
+      banner.innerHTML = `⭕ 正解！ +100pt <span style="font-size:13px; font-weight:normal;">(タイムボーナス: +${timeBonus}pt)</span>`;
+    } else {
+      // 不正解・時間切れ処理
+      if (selectedIndex >= 0) {
+        const selectedBtn = document.getElementById(`opt-btn-${selectedIndex}`);
+        if (selectedBtn) selectedBtn.classList.add('wrong');
+      }
+      if (correctBtn) correctBtn.classList.add('correct'); // 正解の選択肢を強調
+
+      banner.className = 'feedback-banner wrong';
+      if (selectedIndex === -1) {
+        banner.innerText = '⏰ 時間切れ！正解は緑の選択肢です';
+      } else {
+        banner.innerText = '❌ 不正解... 正解は緑の選択肢です';
+      }
     }
 
+    // ホストへリアルタイム点数送信
     if (hostConn && !isSoloMode) {
       hostConn.send({ type: 'score_update', score: myScore });
     }
 
-    currentQuestionIndex++;
-    if (currentQuestionIndex < questions.length) {
-      renderQuestion();
-    } else {
-      finishGame();
-    }
+    // 1.5秒間の正誤確認ウェイトを挟んで次の問題へ
+    setTimeout(() => {
+      currentQuestionIndex++;
+      if (currentQuestionIndex < questions.length) {
+        renderQuestion();
+      } else {
+        finishGame();
+      }
+    }, 1500);
   }
 
   function finishGame() {
     navigateTo('resultScreen');
-    document.getElementById('personalResult').innerText = `あなたのスコア: ${myScore} 点`;
+
+    // 点数内訳の可視化
+    document.getElementById('breakdownCorrectCount').innerText = `${correctAnswersCount} / ${questions.length} 問`;
+    document.getElementById('breakdownBaseScore').innerText = `${baseScoreTotal} pt`;
+    document.getElementById('breakdownTimeBonus').innerText = `+${timeBonusTotal} pt`;
+    document.getElementById('breakdownTotalScore').innerText = `${myScore} pt`;
+
     if (isSoloMode) {
       renderRankingTable('rankingBody', [{ name: myName, class: myClass, score: myScore }]);
     }
